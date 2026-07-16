@@ -1,0 +1,115 @@
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from "@nestjs/common";
+import { ApplicationsService } from "./applications.service";
+import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
+import { RolesGuard } from "../../common/guards/roles.guard";
+import { Roles } from "../../common/decorators/roles.decorator";
+import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import { UserRole } from "../../entities";
+
+const REVIEWERS = [
+  UserRole.MANAGER,
+  UserRole.ACCOUNTS_MANAGER,
+  UserRole.STUDENT_AFFAIR,
+];
+
+@UseGuards(JwtAuthGuard)
+@Controller("applications")
+export class ApplicationsController {
+  constructor(private appsService: ApplicationsService) {}
+
+  @Get()
+  findAll(@Query("search") search?: string) {
+    return this.appsService.findAll(search);
+  }
+
+  @Get("pending")
+  findPending() {
+    return this.appsService.findPending();
+  }
+
+  @Get("student/:studentId/fine-totals")
+  fineTotals(@Param("studentId") studentId: string) {
+    return this.appsService.fineTotalsForStudent(studentId);
+  }
+
+  @Get(":id")
+  findOne(@Param("id") id: string) {
+    return this.appsService.findOne(id);
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.DATA_ENTRY)
+  @Post()
+  create(@Body() body: any, @CurrentUser() user: any) {
+    return this.appsService.create(body, user);
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(...REVIEWERS, UserRole.DATA_ENTRY)
+  @Post(":id/actions")
+  addAction(
+    @Param("id") id: string,
+    @Body() body: any,
+    @CurrentUser() user: any,
+  ) {
+    return this.appsService.addAction(id, body, user);
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(...REVIEWERS)
+  @Patch("actions/:actionId")
+  updateAction(
+    @Param("actionId") actionId: string,
+    @Body() body: any,
+    @CurrentUser() user: any,
+  ) {
+    return this.appsService.updateAction(actionId, body, user);
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(...REVIEWERS)
+  @Delete("actions/:actionId")
+  deleteAction(@Param("actionId") actionId: string, @CurrentUser() user: any) {
+    return this.appsService.deleteAction(actionId, user);
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.MANAGER)
+  @Post(":id/assign")
+  assign(
+    @Param("id") id: string,
+    @Body() body: { assignedToUserId: string; assignedRole: string },
+  ) {
+    return this.appsService.assign(
+      id,
+      body.assignedToUserId,
+      body.assignedRole,
+    );
+  }
+
+  @Post(":id/mark-done")
+  markDone(@Param("id") id: string, @CurrentUser() user: any) {
+    return this.appsService.markDone(id, user);
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(...REVIEWERS)
+  @Post(":id/decide")
+  decide(
+    @Param("id") id: string,
+    @Body() body: { decision: "Accepted" | "Rejected"; reason?: string },
+    @CurrentUser() user: any,
+  ) {
+    return this.appsService.decide(id, body.decision, body.reason, user);
+  }
+}

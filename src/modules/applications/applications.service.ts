@@ -1,0 +1,378 @@
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
+import { EntityRepository } from "@mikro-orm/postgresql";
+import { InjectRepository } from "@mikro-orm/nestjs";
+import {
+  Application,
+  ApplicationAction,
+  ApplicationStatus,
+  Semester,
+  Student,
+  User,
+  UserRole,
+} from "../../entities";
+import { NotificationsService } from "../notifications/notifications.service";
+import { MailerService } from "../mailer/mailer.service";
+import { FeesService } from "../fees/fees.service";
+
+const REVIEWING_ROLES = [
+  UserRole.MANAGER,
+  UserRole.ACCOUNTS_MANAGER,
+  UserRole.STUDENT_AFFAIR,
+];
+
+@Injectable()
+export class ApplicationsService {
+  constructor(
+    @InjectRepository(Application)
+    private appRepo: EntityRepository<Application>,
+    @InjectRepository(ApplicationAction)
+    private actionRepo: EntityRepository<ApplicationAction>,
+    @InjectRepository(Student) private studentRepo: EntityRepository<Student>,
+    @InjectRepository(Semester)
+    private semesterRepo: EntityRepository<Semester>,
+    @InjectRepository(User) private userRepo: EntityRepository<User>,
+    private notifications: NotificationsService,
+    private mailer: MailerService,
+    private feesService: FeesService,
+  ) {}
+
+  // JWT se aane wale plain {id, email, role, name} object ko
+  // asli MikroORM User reference mein convert karta hai (DB hit ke bagair).
+  private userRef(user: { id: string }): User {
+    return this.appRepo.getEntityManager().getReference(User, user.id);
+  }
+
+  findAll(search?: string) {
+    const where: any = {};
+    if (search) where.student = { enrollmentNumber: { $ilike: `%${search}%` } };
+    return this.appRepo.find(where, {
+      orderBy: { createdAt: "DESC" },
+      populate: ["student", "semester", "createdBy", "assignedTo"],
+    });
+  }
+
+  findPending() {
+    return this.appRepo.find(
+      {
+        status: {
+          $in: [
+            ApplicationStatus.PENDING,
+            ApplicationStatus.ASSIGNED,
+            ApplicationStatus.UNDER_REVIEW,
+          ],
+        },
+      },
+      {
+        orderBy: { createdAt: "DESC" },
+        populate: ["student", "semester", "createdBy", "assignedTo"],
+      },
+    );
+  }
+
+  async findOne(id: string) {
+    const app = await this.appRepo.findOne(
+      { id },
+      { populate: ["student", "semester", "createdBy", "assignedTo"] },
+    );
+    if (!app) throw new NotFoundException("Application not found");
+    const actions = await this.actionRepo.find(
+      { application: id },
+      { orderBy: { createdAt: "ASC" }, populate: ["performedBy"] },
+    );
+    return { application: app, actions };
+  }
+
+  /** 6.2 / 8.2: Data Entry creates an application only for an existing student, tied to one of their semesters. */
+  async create(
+    data: {
+      enrollmentNumber: string;
+      semesterId: string;
+      title: string;
+      description?: string;
+    },
+    createdByUser: User,
+  ) {
+    const student = await this.studentRepo.findOne({
+      enrollmentNumber: { $ilike: String(data.enrollmentNumber || '').trim() },
+    });
+    if (!student) {
+      throw new BadRequestException(
+        "Student not found for this Roll Number — application creation blocked",
+      );
+    }
+
+    const semester = await this.semesterRepo.findOne({
+      id: data.semesterId,
+      student: student.id,
+    });
+    if (!semester) {
+      throw new BadRequestException(
+        "Selected semester does not belong to this student",
+      );
+    }
+
+    const app = this.appRepo.create({
+      student,
+      semester,
+      title: data.title,
+      description: data.description,
+      createdBy: this.userRef(createdByUser),
+      status: ApplicationStatus.PENDING,
+    });
+    await this.appRepo.getEntityManager().persistAndFlush(app);
+
+    await this.notifications.notifyRoles(
+      REVIEWING_ROLES,
+      "ApplicationCreated",
+      `New application "${app.title}" created for ${student.name} (${student.enrollmentNumber}) — ${semester.label}`,
+      "Application",
+      app.id,
+    );
+
+    return app;
+  }
+
+  private async assertEditable(app: Application, actingUser: User) {
+    if (actingUser.role === UserRole.DATA_ENTRY) {
+      if (app.locked) {
+        throw new ForbiddenException(
+          "This application is locked — a reviewer has already acted on it",
+        );
+      }
+    }
+  }
+
+  /** 6.3: add a new action entry (fine/fee/status/custom) to an application's audit trail.
+   *  Any action carrying an amount is treated as a fine and is automatically posted
+   *  to the Fee ledger for the semester the application was filed against. */
+  async addAction(
+    applicationId: string,
+    data: {
+      actionType: string;
+      title?: string;
+      description?: string;
+      amount?: number;
+      date?: Date;
+    },
+    actingUser: User,
+  ) {
+    const app = await this.appRepo.findOneOrFail(
+      { id: applicationId },
+      { populate: ["student", "semester", "createdBy"] },
+    );
+    await this.assertEditable(app, actingUser);
+
+    const action = this.actionRepo.create({
+      application: app,
+      performedBy: this.userRef(actingUser),
+      performedByRole: actingUser.role,
+      actionType: data.actionType,
+      title: data.title,
+      description: data.description,
+      amount: data.amount !== undefined ? String(data.amount) : undefined,
+      date: data.date,
+    });
+    await this.actionRepo.getEntityManager().persistAndFlush(action);
+
+    // Any reviewing role touching the application locks it for Data Entry (per 6.5)
+    if (REVIEWING_ROLES.includes(actingUser.role) && !app.locked) {
+      app.locked = true;
+      if (app.status === ApplicationStatus.PENDING)
+        app.status = ApplicationStatus.UNDER_REVIEW;
+      await this.appRepo.getEntityManager().flush();
+    }
+
+    // Auto-post the fine — matching custom column (UMC/DC, DPT, Bar Council,
+    // Drop of scholarship) ke existing row mein update, warna alag row.
+    if (data.amount !== undefined && data.amount > 0) {
+      await this.feesService.postApplicationFine(
+        app.student.id,
+        app.semester.id,
+        data.actionType,
+        data.amount,
+        data.title,
+      );
+    }
+
+    return action;
+  }
+
+  async updateAction(
+    actionId: string,
+    data: Partial<{
+      title: string;
+      description: string;
+      amount: number;
+      date: Date;
+    }>,
+    actingUser: User,
+  ) {
+    const original = await this.actionRepo.findOneOrFail(
+      { id: actionId },
+      { populate: ["application", "application.student"] },
+    );
+    // Preserve audit trail: append a new row referencing the original instead of mutating it.
+    const edit = this.actionRepo.create({
+      application: original.application,
+      performedBy: this.userRef(actingUser),
+      performedByRole: actingUser.role,
+      actionType: original.actionType,
+      title: data.title ?? original.title,
+      description: data.description ?? original.description,
+      amount: data.amount !== undefined ? String(data.amount) : original.amount,
+      date: data.date ?? original.date,
+      originalActionId: original.id,
+    });
+    await this.actionRepo.getEntityManager().persistAndFlush(edit);
+    return edit;
+  }
+
+  async deleteAction(actionId: string, actingUser: User) {
+    const original = await this.actionRepo.findOneOrFail(
+      { id: actionId },
+      { populate: ["application"] },
+    );
+    const marker = this.actionRepo.create({
+      application: original.application,
+      performedBy: this.userRef(actingUser),
+      performedByRole: actingUser.role,
+      actionType: original.actionType,
+      title: original.title,
+      description: `[DELETED] ${original.description || ""}`.trim(),
+      amount: original.amount,
+      date: original.date,
+      originalActionId: original.id,
+      isDeleted: true,
+    });
+    await this.actionRepo.getEntityManager().persistAndFlush(marker);
+    return marker;
+  }
+
+  /** 4.3: Manager assigns application to a role/person for handling before final decision. */
+  async assign(
+    applicationId: string,
+    assignedToUserId: string,
+    assignedRole: string,
+  ) {
+    const app = await this.appRepo.findOneOrFail(
+      { id: applicationId },
+      { populate: ["student"] },
+    );
+    const assignee = await this.userRepo.findOneOrFail({
+      id: assignedToUserId,
+    });
+    app.assignedTo = assignee;
+    app.assignedRole = assignedRole;
+    app.status = ApplicationStatus.ASSIGNED;
+    app.locked = true;
+    await this.appRepo.getEntityManager().flush();
+
+    await this.notifications.notify(
+      assignee.id,
+      "Assigned",
+      `Application "${app.title}" for ${app.student.name} has been assigned to you`,
+      "Application",
+      app.id,
+    );
+    return app;
+  }
+
+  /** Assignee marks their part done -> goes into Manager's review queue. */
+  async markDone(applicationId: string, actingUser: User) {
+    const app = await this.appRepo.findOneOrFail(
+      { id: applicationId },
+      { populate: ["student"] },
+    );
+    app.status = ApplicationStatus.UNDER_REVIEW;
+    await this.appRepo.getEntityManager().flush();
+
+    await this.notifications.notifyRoles(
+      [UserRole.MANAGER],
+      "ReviewReady",
+      `${actingUser.name} marked "${app.title}" done — ready for your review`,
+      "Application",
+      app.id,
+    );
+    return app;
+  }
+
+  /** 6.1 step 6: final Accept/Reject decision. Sends student email + notifies prior actors. */
+  async decide(
+    applicationId: string,
+    decision: "Accepted" | "Rejected",
+    reason: string | undefined,
+    actingUser: User,
+  ) {
+    const app = await this.appRepo.findOneOrFail(
+      { id: applicationId },
+      { populate: ["student", "createdBy"] },
+    );
+    app.status =
+      decision === "Accepted"
+        ? ApplicationStatus.ACCEPTED
+        : ApplicationStatus.REJECTED;
+    app.decisionReason = reason;
+    app.decidedAt = new Date();
+    await this.appRepo.getEntityManager().flush();
+
+    await this.actionRepo.getEntityManager().persistAndFlush(
+      this.actionRepo.create({
+        application: app,
+        performedBy: this.userRef(actingUser),
+        performedByRole: actingUser.role,
+        actionType: "Decision",
+        title: decision,
+        description: reason,
+        date: new Date(),
+      }),
+    );
+
+    if (app.student.email) {
+      await this.mailer.send({
+        to: app.student.email,
+        subject: `Your application "${app.title}" has been ${decision}`,
+        html: `<p>Dear ${app.student.name},</p>
+               <p>Your application reference <b>${app.id}</b> ("${app.title}") has been <b>${decision}</b> as of ${app.decidedAt.toDateString()}.</p>
+               ${reason ? `<p>Reason: ${reason}</p>` : ""}
+               <p>Regards,<br/>University Administration</p>`,
+      });
+    }
+
+    await this.notifications.notify(
+      app.createdBy.id,
+      "Decided",
+      `Application "${app.title}" for ${app.student.name} was ${decision}`,
+      "Application",
+      app.id,
+    );
+
+    return app;
+  }
+
+  /** 6.4 fine totaling: per-semester -> per-program -> grand total for a student, across all applications. */
+  async fineTotalsForStudent(studentId: string) {
+    const apps = await this.appRepo.find({ student: studentId });
+    const appIds = apps.map((a) => a.id);
+    if (appIds.length === 0) return { grandTotal: 0, byType: {} };
+
+    const actions = await this.actionRepo.find({
+      application: { $in: appIds },
+      isDeleted: false,
+      amount: { $ne: null },
+    });
+
+    const byType: Record<string, number> = {};
+    let grandTotal = 0;
+    for (const a of actions) {
+      const amt = Number(a.amount || 0);
+      byType[a.actionType] = (byType[a.actionType] || 0) + amt;
+      grandTotal += amt;
+    }
+    return { grandTotal, byType };
+  }
+}
