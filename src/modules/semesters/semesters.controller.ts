@@ -32,7 +32,7 @@ export class SemestersController {
       body.startType.trim().toLowerCase() === "spring"
         ? SemesterType.SPRING
         : SemesterType.FALL;
-    return this.semestersService.generateInitial(
+    return this.semestersService.generateRoadmap(
       student,
       body.startYear,
       startType,

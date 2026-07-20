@@ -116,6 +116,53 @@ export class SemestersService {
     return semesters;
   }
 
+  /**
+   * Manual roadmap generation/repair, used by the student Fee page's "Generate
+   * Semesters" control. Unlike generateInitial (which always creates fresh rows,
+   * only safe when the student has zero semesters) this is a MERGE: it builds the
+   * full label set for the given admission year/type + program length, and for
+   * each label it reuses the student's existing semester row if one already has
+   * that exact label (e.g. "Fall 2026" created earlier by a Fee Excel import),
+   * updating only its order/type/year to match its position in the roadmap —
+   * so any fee entries already attached to that semester are untouched. Labels
+   * with no existing match get a new semester row created.
+   *
+   * This is what lets a manager import a single current-semester fee sheet
+   * (which only creates that one semester, e.g. "Fall 2026") and then fill in
+   * the rest of a student's real admission-anchored roadmap (e.g. starting
+   * Spring 2022) afterwards, without losing the imported semester's fee data.
+   */
+  async generateRoadmap(
+    student: Student,
+    startYear: number,
+    startType: SemesterType = SemesterType.FALL,
+  ) {
+    const years = this.programYears(student);
+    const labels = this.buildLabels(startYear, years, 1, startType);
+
+    const existing = await this.findForStudent(student.id);
+    const existingByLabel = new Map(existing.map((s) => [s.label, s]));
+
+    const em = this.semesterRepo.getEntityManager();
+    const result: Semester[] = [];
+
+    for (const l of labels) {
+      const match = existingByLabel.get(l.label);
+      if (match) {
+        match.type = l.type;
+        match.year = l.year;
+        match.order = l.order;
+        result.push(match);
+      } else {
+        const created = this.semesterRepo.create({ student, ...l });
+        result.push(created);
+      }
+    }
+
+    await em.persistAndFlush(result);
+    return result.sort((a, b) => a.order - b.order);
+  }
+
   /** Rolling generation: extends by another full program-length block once the existing block is exhausted. */
   async extendRollingWindow(student: Student) {
     const existing = await this.semesterRepo.find(
