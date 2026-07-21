@@ -1,7 +1,3 @@
-import { MikroOrmModuleOptions } from "@mikro-orm/nestjs";
-import { PostgreSqlDriver } from "@mikro-orm/postgresql";
-import { Migrator } from "@mikro-orm/migrations";
-import "dotenv/config";
 import {
   User,
   Student,
@@ -16,16 +12,13 @@ import {
   Staff,
   StaffApplication,
   StaffLeave,
+  ClearanceSlip, // ← add karo
 } from "./entities";
 
 const config: MikroOrmModuleOptions = {
   driver: PostgreSqlDriver,
   clientUrl: process.env.DATABASE_URL,
 
-  // Explicit entity classes instead of a glob path into ./dist. This
-  // works identically whether the app is run normally (nest build ->
-  // dist -> PM2) or bundled for a serverless platform like Vercel,
-  // which doesn't produce a dist folder in the same shape.
   entities: [
     User,
     Student,
@@ -40,9 +33,9 @@ const config: MikroOrmModuleOptions = {
     Staff,
     StaffApplication,
     StaffLeave,
+    ClearanceSlip, // ← add karo
   ],
 
-  // Keep entity discovery deterministic.
   autoLoadEntities: false,
 
   driverOptions: {
