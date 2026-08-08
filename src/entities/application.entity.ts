@@ -58,6 +58,12 @@ export class Application {
   @Property({ nullable: true })
   decidedAt?: Date;
 
+  @Property({ type: "text", nullable: true, lazy: true })
+  photoData?: string;
+
+  @Property({ nullable: true })
+  photoMimeType?: string;
+
   @Property({ onCreate: () => new Date() })
   createdAt: Date = new Date();
 

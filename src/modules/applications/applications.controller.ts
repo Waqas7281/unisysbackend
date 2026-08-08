@@ -48,7 +48,7 @@ export class ApplicationsController {
   }
 
   @UseGuards(RolesGuard)
-  @Roles(UserRole.DATA_ENTRY)
+  @Roles(UserRole.DATA_ENTRY, UserRole.MANAGER, UserRole.REGISTRAR)
   @Post()
   create(@Body() body: any, @CurrentUser() user: any) {
     return this.appsService.create(body, user);

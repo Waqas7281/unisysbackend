@@ -15,6 +15,7 @@ import {
   User,
   UserRole,
 } from "../../entities";
+const MAX_PHOTO_BYTES = 600 * 1024;
 import { NotificationsService } from "../notifications/notifications.service";
 import { MailerService } from "../mailer/mailer.service";
 import { FeesService } from "../fees/fees.service";
@@ -77,7 +78,15 @@ export class ApplicationsService {
   async findOne(id: string) {
     const app = await this.appRepo.findOne(
       { id },
-      { populate: ["student", "semester", "createdBy", "assignedTo"] },
+      {
+        populate: [
+          "student",
+          "semester",
+          "createdBy",
+          "assignedTo",
+          "photoData",
+        ],
+      },
     );
     if (!app) throw new NotFoundException("Application not found");
     const actions = await this.actionRepo.find(
@@ -94,11 +103,13 @@ export class ApplicationsService {
       semesterId: string;
       title: string;
       description?: string;
+      photoBase64?: string;
+      photoMimeType?: string;
     },
     createdByUser: User,
   ) {
     const student = await this.studentRepo.findOne({
-      enrollmentNumber: { $ilike: String(data.enrollmentNumber || '').trim() },
+      enrollmentNumber: { $ilike: String(data.enrollmentNumber || "").trim() },
     });
     if (!student) {
       throw new BadRequestException(
@@ -116,11 +127,36 @@ export class ApplicationsService {
       );
     }
 
+    // Optional proof photo. The frontend already compresses to ~600KB before
+    // sending, but never trust the client — re-check the actual decoded size
+    // here and reject anything over the limit outright.
+    let photoData: string | undefined;
+    let photoMimeType: string | undefined;
+    if (data.photoBase64) {
+      const commaIdx = data.photoBase64.indexOf(",");
+      const raw =
+        data.photoBase64.startsWith("data:") && commaIdx !== -1
+          ? data.photoBase64.slice(commaIdx + 1)
+          : data.photoBase64;
+
+      const approxBytes = Math.floor((raw.length * 3) / 4);
+      if (approxBytes > MAX_PHOTO_BYTES) {
+        throw new BadRequestException(
+          "Proof photo is too large — please keep it under 600KB",
+        );
+      }
+
+      photoData = raw;
+      photoMimeType = data.photoMimeType || "image/jpeg";
+    }
+
     const app = this.appRepo.create({
       student,
       semester,
       title: data.title,
       description: data.description,
+      photoData,
+      photoMimeType,
       createdBy: this.userRef(createdByUser),
       status: ApplicationStatus.PENDING,
     });
