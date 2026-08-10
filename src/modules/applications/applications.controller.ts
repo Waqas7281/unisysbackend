@@ -28,8 +28,16 @@ export class ApplicationsController {
   constructor(private appsService: ApplicationsService) {}
 
   @Get()
-  findAll(@Query("search") search?: string) {
-    return this.appsService.findAll(search);
+  findAll(
+    @Query("search") search?: string,
+    @Query("mine") mine?: string,
+    @CurrentUser() user?: any,
+  ) {
+    // "mine=true" scopes the list to only applications this user personally
+    // created — used by Data Entry so they see their own submissions instead
+    // of every application in the system (reviewer roles never pass this).
+    const createdByUserId = mine === "true" ? user?.id : undefined;
+    return this.appsService.findAll(search, createdByUserId);
   }
 
   @Get("pending")

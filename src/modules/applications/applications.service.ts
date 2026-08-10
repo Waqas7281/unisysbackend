@@ -15,10 +15,14 @@ import {
   User,
   UserRole,
 } from "../../entities";
-const MAX_PHOTO_BYTES = 600 * 1024;
 import { NotificationsService } from "../notifications/notifications.service";
 import { MailerService } from "../mailer/mailer.service";
 import { FeesService } from "../fees/fees.service";
+
+// Proof photo cap for applications — 800KB, matches the client-side
+// compression target in CreateApplication.jsx. Enforced again here since
+// the client is never fully trusted.
+const MAX_PHOTO_BYTES = 800 * 1024;
 
 const REVIEWING_ROLES = [
   UserRole.MANAGER,
@@ -48,9 +52,10 @@ export class ApplicationsService {
     return this.appRepo.getEntityManager().getReference(User, user.id);
   }
 
-  findAll(search?: string) {
+  findAll(search?: string, createdByUserId?: string) {
     const where: any = {};
     if (search) where.student = { enrollmentNumber: { $ilike: `%${search}%` } };
+    if (createdByUserId) where.createdBy = createdByUserId;
     return this.appRepo.find(where, {
       orderBy: { createdAt: "DESC" },
       populate: ["student", "semester", "createdBy", "assignedTo"],
@@ -127,12 +132,15 @@ export class ApplicationsService {
       );
     }
 
-    // Optional proof photo. The frontend already compresses to ~600KB before
+    // Optional proof photo. The frontend already compresses to ~800KB before
     // sending, but never trust the client — re-check the actual decoded size
     // here and reject anything over the limit outright.
     let photoData: string | undefined;
     let photoMimeType: string | undefined;
     if (data.photoBase64) {
+      // Accept either a raw base64 string or a full "data:image/...;base64,"
+      // URI (whatever the browser's canvas/file APIs handed back) — strip
+      // the prefix if present so only the base64 payload is stored.
       const commaIdx = data.photoBase64.indexOf(",");
       const raw =
         data.photoBase64.startsWith("data:") && commaIdx !== -1
@@ -142,7 +150,7 @@ export class ApplicationsService {
       const approxBytes = Math.floor((raw.length * 3) / 4);
       if (approxBytes > MAX_PHOTO_BYTES) {
         throw new BadRequestException(
-          "Proof photo is too large — please keep it under 600KB",
+          "Proof photo is too large — please keep it under 800KB",
         );
       }
 
