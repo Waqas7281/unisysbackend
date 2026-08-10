@@ -181,6 +181,47 @@ export class ApplicationsService {
     return app;
   }
 
+  /**
+   * Replace or remove the proof photo on an existing application. Same
+   * 800KB validation as create(). Passing photoBase64: null removes the
+   * photo entirely. Subject to the same lock rule as other Data Entry edits
+   * — once a reviewer has acted on the application, Data Entry can no
+   * longer touch it (Manager/Registrar, who can also create applications,
+   * are never locked out).
+   */
+  async updatePhoto(
+    applicationId: string,
+    data: { photoBase64?: string | null; photoMimeType?: string },
+    actingUser: User,
+  ) {
+    const app = await this.appRepo.findOneOrFail({ id: applicationId });
+    await this.assertEditable(app, actingUser);
+
+    if (data.photoBase64 === null) {
+      app.photoData = undefined;
+      app.photoMimeType = undefined;
+    } else if (data.photoBase64) {
+      const commaIdx = data.photoBase64.indexOf(",");
+      const raw =
+        data.photoBase64.startsWith("data:") && commaIdx !== -1
+          ? data.photoBase64.slice(commaIdx + 1)
+          : data.photoBase64;
+
+      const approxBytes = Math.floor((raw.length * 3) / 4);
+      if (approxBytes > MAX_PHOTO_BYTES) {
+        throw new BadRequestException(
+          "Proof photo is too large — please keep it under 800KB",
+        );
+      }
+
+      app.photoData = raw;
+      app.photoMimeType = data.photoMimeType || "image/jpeg";
+    }
+
+    await this.appRepo.getEntityManager().flush();
+    return app;
+  }
+
   private async assertEditable(app: Application, actingUser: User) {
     if (actingUser.role === UserRole.DATA_ENTRY) {
       if (app.locked) {

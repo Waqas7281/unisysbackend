@@ -63,6 +63,17 @@ export class ApplicationsController {
   }
 
   @UseGuards(RolesGuard)
+  @Roles(UserRole.DATA_ENTRY, UserRole.MANAGER, UserRole.REGISTRAR)
+  @Patch(":id/photo")
+  updatePhoto(
+    @Param("id") id: string,
+    @Body() body: { photoBase64?: string | null; photoMimeType?: string },
+    @CurrentUser() user: any,
+  ) {
+    return this.appsService.updatePhoto(id, body, user);
+  }
+
+  @UseGuards(RolesGuard)
   @Roles(...REVIEWERS, UserRole.DATA_ENTRY)
   @Post(":id/actions")
   addAction(
