@@ -28,6 +28,7 @@ const REVIEWING_ROLES = [
   UserRole.MANAGER,
   UserRole.ACCOUNTS_MANAGER,
   UserRole.STUDENT_AFFAIR,
+  UserRole.REGISTRAR,
 ];
 
 @Injectable()

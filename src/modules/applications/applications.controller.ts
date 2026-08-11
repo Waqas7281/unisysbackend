@@ -20,6 +20,7 @@ const REVIEWERS = [
   UserRole.MANAGER,
   UserRole.ACCOUNTS_MANAGER,
   UserRole.STUDENT_AFFAIR,
+  UserRole.REGISTRAR,
 ];
 
 @UseGuards(JwtAuthGuard)
