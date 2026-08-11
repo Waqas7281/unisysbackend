@@ -104,7 +104,7 @@ export class ApplicationsController {
   }
 
   @UseGuards(RolesGuard)
-  @Roles(UserRole.MANAGER)
+  @Roles(UserRole.MANAGER, UserRole.REGISTRAR)
   @Post(":id/assign")
   assign(
     @Param("id") id: string,

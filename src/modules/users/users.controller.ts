@@ -7,32 +7,32 @@ import { UserRole } from '../../entities';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(UserRole.MANAGER)
-@Controller('users')
+@Controller("users")
 export class UsersController {
   constructor(private usersService: UsersService) {}
 
+  @Roles(UserRole.MANAGER, UserRole.REGISTRAR)
   @Get()
   findAll() {
     return this.usersService.findAll();
   }
-
   @Post()
   create(@Body() body: any) {
     return this.usersService.create(body);
   }
 
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() body: any) {
+  @Patch(":id")
+  update(@Param("id") id: string, @Body() body: any) {
     return this.usersService.update(id, body);
   }
 
-  @Delete(':id')
-  remove(@Param('id') id: string) {
+  @Delete(":id")
+  remove(@Param("id") id: string) {
     return this.usersService.remove(id);
   }
 
-  @Patch(':id/toggle-block')
-  toggleBlock(@Param('id') id: string) {
+  @Patch(":id/toggle-block")
+  toggleBlock(@Param("id") id: string) {
     return this.usersService.toggleBlock(id);
   }
 }
