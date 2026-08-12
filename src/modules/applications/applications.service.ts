@@ -53,16 +53,20 @@ export class ApplicationsService {
     return this.appRepo.getEntityManager().getReference(User, user.id);
   }
 
-  findAll(search?: string, createdByUserId?: string) {
+  findAll(
+    search?: string,
+    createdByUserId?: string,
+    assignedToUserId?: string,
+  ) {
     const where: any = {};
     if (search) where.student = { enrollmentNumber: { $ilike: `%${search}%` } };
     if (createdByUserId) where.createdBy = createdByUserId;
+    if (assignedToUserId) where.assignedTo = assignedToUserId;
     return this.appRepo.find(where, {
       orderBy: { createdAt: "DESC" },
       populate: ["student", "semester", "createdBy", "assignedTo"],
     });
   }
-
   findPending() {
     return this.appRepo.find(
       {

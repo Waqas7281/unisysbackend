@@ -21,6 +21,7 @@ const REVIEWERS = [
   UserRole.ACCOUNTS_MANAGER,
   UserRole.STUDENT_AFFAIR,
   UserRole.REGISTRAR,
+  UserRole.RECORD_ROOM,
 ];
 
 @UseGuards(JwtAuthGuard)
@@ -32,13 +33,18 @@ export class ApplicationsController {
   findAll(
     @Query("search") search?: string,
     @Query("mine") mine?: string,
+    @Query("assignedToMe") assignedToMe?: string,
     @CurrentUser() user?: any,
   ) {
     // "mine=true" scopes the list to only applications this user personally
     // created — used by Data Entry so they see their own submissions instead
     // of every application in the system (reviewer roles never pass this).
     const createdByUserId = mine === "true" ? user?.id : undefined;
-    return this.appsService.findAll(search, createdByUserId);
+    // "assignedToMe=true" scopes the list to only applications assigned to
+    // this user — used by Record Room so they only see applications that
+    // were explicitly assigned to them.
+    const assignedToUserId = assignedToMe === "true" ? user?.id : undefined;
+    return this.appsService.findAll(search, createdByUserId, assignedToUserId);
   }
 
   @Get("pending")
