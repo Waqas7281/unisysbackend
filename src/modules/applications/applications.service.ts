@@ -137,15 +137,9 @@ export class ApplicationsService {
       );
     }
 
-    // Optional proof photo. The frontend already compresses to ~800KB before
-    // sending, but never trust the client — re-check the actual decoded size
-    // here and reject anything over the limit outright.
     let photoData: string | undefined;
     let photoMimeType: string | undefined;
     if (data.photoBase64) {
-      // Accept either a raw base64 string or a full "data:image/...;base64,"
-      // URI (whatever the browser's canvas/file APIs handed back) — strip
-      // the prefix if present so only the base64 payload is stored.
       const commaIdx = data.photoBase64.indexOf(",");
       const raw =
         data.photoBase64.startsWith("data:") && commaIdx !== -1
@@ -186,14 +180,6 @@ export class ApplicationsService {
     return app;
   }
 
-  /**
-   * Replace or remove the proof photo on an existing application. Same
-   * 800KB validation as create(). Passing photoBase64: null removes the
-   * photo entirely. Subject to the same lock rule as other Data Entry edits
-   * — once a reviewer has acted on the application, Data Entry can no
-   * longer touch it (Manager/Registrar, who can also create applications,
-   * are never locked out).
-   */
   async updatePhoto(
     applicationId: string,
     data: { photoBase64?: string | null; photoMimeType?: string },
@@ -227,7 +213,7 @@ export class ApplicationsService {
     return app;
   }
 
-  private async assertEditable(app: Application, actingUser: User) {
+  private assertEditable(app: Application, actingUser: User) {
     if (actingUser.role === UserRole.DATA_ENTRY) {
       if (app.locked) {
         throw new ForbiddenException(
@@ -237,9 +223,28 @@ export class ApplicationsService {
     }
   }
 
-  /** 6.3: add a new action entry (fine/fee/status/custom) to an application's audit trail.
-   *  Any action carrying an amount is treated as a fine and is automatically posted
-   *  to the Fee ledger for the semester the application was filed against. */
+  private assertCanReview(app: Application, actingUser: User) {
+    const baseReviewerRoles = [
+      UserRole.MANAGER,
+      UserRole.ACCOUNTS_MANAGER,
+      UserRole.STUDENT_AFFAIR,
+      UserRole.REGISTRAR,
+    ];
+    if (app.assignedTo) {
+      if (app.assignedTo.id !== actingUser.id) {
+        throw new ForbiddenException(
+          "This application is assigned to someone else — only the assignee can act on it",
+        );
+      }
+      return;
+    }
+    if (!baseReviewerRoles.includes(actingUser.role)) {
+      throw new ForbiddenException(
+        "This application hasn't been assigned to you yet",
+      );
+    }
+  }
+
   async addAction(
     applicationId: string,
     data: {
@@ -253,9 +258,12 @@ export class ApplicationsService {
   ) {
     const app = await this.appRepo.findOneOrFail(
       { id: applicationId },
-      { populate: ["student", "semester", "createdBy"] },
+      { populate: ["student", "semester", "createdBy", "assignedTo"] },
     );
     await this.assertEditable(app, actingUser);
+    if (actingUser.role !== UserRole.DATA_ENTRY) {
+      this.assertCanReview(app, actingUser);
+    }
 
     const action = this.actionRepo.create({
       application: app,
@@ -269,7 +277,6 @@ export class ApplicationsService {
     });
     await this.actionRepo.getEntityManager().persistAndFlush(action);
 
-    // Any reviewing role touching the application locks it for Data Entry (per 6.5)
     if (REVIEWING_ROLES.includes(actingUser.role) && !app.locked) {
       app.locked = true;
       if (app.status === ApplicationStatus.PENDING)
@@ -277,8 +284,6 @@ export class ApplicationsService {
       await this.appRepo.getEntityManager().flush();
     }
 
-    // Auto-post the fine — matching custom column (UMC/DC, DPT, Bar Council,
-    // Drop of scholarship) ke existing row mein update, warna alag row.
     if (data.amount !== undefined && data.amount > 0) {
       await this.feesService.postApplicationFine(
         app.student.id,
@@ -306,7 +311,6 @@ export class ApplicationsService {
       { id: actionId },
       { populate: ["application", "application.student"] },
     );
-    // Preserve audit trail: append a new row referencing the original instead of mutating it.
     const edit = this.actionRepo.create({
       application: original.application,
       performedBy: this.userRef(actingUser),
@@ -343,7 +347,6 @@ export class ApplicationsService {
     return marker;
   }
 
-  /** 4.3: Manager assigns application to a role/person for handling before final decision. */
   async assign(
     applicationId: string,
     assignedToUserId: string,
@@ -372,7 +375,6 @@ export class ApplicationsService {
     return app;
   }
 
-  /** Assignee marks their part done -> goes into Manager's review queue. */
   async markDone(applicationId: string, actingUser: User) {
     const app = await this.appRepo.findOneOrFail(
       { id: applicationId },
@@ -391,7 +393,6 @@ export class ApplicationsService {
     return app;
   }
 
-  /** 6.1 step 6: final Accept/Reject decision. Sends student email + notifies prior actors. */
   async decide(
     applicationId: string,
     decision: "Accepted" | "Rejected",
@@ -400,8 +401,10 @@ export class ApplicationsService {
   ) {
     const app = await this.appRepo.findOneOrFail(
       { id: applicationId },
-      { populate: ["student", "createdBy"] },
+      { populate: ["student", "createdBy", "assignedTo"] },
     );
+    this.assertCanReview(app, actingUser);
+
     app.status =
       decision === "Accepted"
         ? ApplicationStatus.ACCEPTED
@@ -441,10 +444,22 @@ export class ApplicationsService {
       app.id,
     );
 
+    if (
+      actingUser.role !== UserRole.MANAGER &&
+      actingUser.role !== UserRole.REGISTRAR
+    ) {
+      await this.notifications.notifyRoles(
+        [UserRole.MANAGER, UserRole.REGISTRAR],
+        "Decided",
+        `Application "${app.title}" for ${app.student.name} was ${decision} by ${actingUser.name} (${actingUser.role})${reason ? ` — "${reason}"` : ""}`,
+        "Application",
+        app.id,
+      );
+    }
+
     return app;
   }
 
-  /** 6.4 fine totaling: per-semester -> per-program -> grand total for a student, across all applications. */
   async fineTotalsForStudent(studentId: string) {
     const apps = await this.appRepo.find({ student: studentId });
     const appIds = apps.map((a) => a.id);

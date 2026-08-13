@@ -1,18 +1,19 @@
-import { Entity, PrimaryKey, Property, Enum } from '@mikro-orm/core';
-import { randomUUID } from 'crypto';
+import { Entity, PrimaryKey, Property, Enum } from "@mikro-orm/core";
+import { randomUUID } from "crypto";
 
 export enum UserRole {
-  MANAGER = 'Manager',
-  ACCOUNTS_MANAGER = 'AccountsManager',
-  STUDENT_AFFAIR = 'StudentAffair',
-  DATA_ENTRY = 'DataEntry',
-  RECORD_ROOM = 'RecordRoom',
-  REGISTRAR = 'Registrar',
-  ADMISSION_CENTER = 'AdmissionCenter',
-  HR = 'HR',
+  MANAGER = "Manager",
+  ACCOUNTS_MANAGER = "AccountsManager",
+  STUDENT_AFFAIR = "StudentAffair",
+  DATA_ENTRY = "DataEntry",
+  RECORD_ROOM = "RecordRoom",
+  EXAM = "Exam",
+  REGISTRAR = "Registrar",
+  ADMISSION_CENTER = "AdmissionCenter",
+  HR = "HR",
 }
 
-@Entity({ tableName: 'users' })
+@Entity({ tableName: "users" })
 export class User {
   @PrimaryKey()
   id: string = randomUUID();
