@@ -16,6 +16,7 @@ import {
 } from "../../entities";
 import { NotificationsService } from "../notifications/notifications.service";
 import { SemestersService } from "../semesters/semesters.service";
+import { AuditService } from "../audit/audit.service";
 
 // Columns in a fee Excel sheet that identify the student / row context rather than
 // representing an actual fee amount/column. These are matched against, never turned
@@ -90,6 +91,7 @@ export class FeesService {
     private fieldRepo: EntityRepository<CustomFieldDefinition>,
     private notifications: NotificationsService,
     private semestersService: SemestersService,
+    private auditService: AuditService,
   ) {}
 
   async findForStudent(studentId: string) {
@@ -123,15 +125,18 @@ export class FeesService {
     return { semesters, grandTotal, grandFineTotal };
   }
 
-  async addFee(data: {
-    studentId: string;
-    semesterId: string;
-    feeType: string;
-    amount: number;
-    installmentNumber?: number;
-    dueDate?: Date;
-    customValues?: Record<string, any>;
-  }) {
+  async addFee(
+    data: {
+      studentId: string;
+      semesterId: string;
+      feeType: string;
+      amount: number;
+      installmentNumber?: number;
+      dueDate?: Date;
+      customValues?: Record<string, any>;
+    },
+    actingUser: { id: string; role: string },
+  ) {
     const student = await this.studentRepo.findOneOrFail({
       id: data.studentId,
     });
@@ -155,12 +160,46 @@ export class FeesService {
       "Student",
       student.id,
     );
+    await this.auditService.log({
+      module: "Fee",
+      action: "Created",
+      studentId: student.id,
+      recordId: fee.id,
+      actingUser,
+      description: `Added a "${data.feeType}" fee of Rs ${Number(data.amount).toLocaleString()} for ${student.name} (${student.enrollmentNumber}), ${semester.label}`,
+    });
     return fee;
   }
 
-  async updateFee(id: string, data: Partial<Fee>) {
+  async updateFee(
+    id: string,
+    data: Partial<Fee>,
+    actingUser: { id: string; role: string },
+  ) {
     const fee = await this.feeRepo.findOne({ id }, { populate: ["student"] });
     if (!fee) throw new NotFoundException("Fee record not found");
+
+    const trackedFields: (keyof Fee)[] = [
+      "amount",
+      "paidStatus",
+      "paidAmount",
+      "feeType",
+      "dueDate",
+      "installmentNumber",
+    ];
+    const changes: Record<string, { from: any; to: any }> = {};
+    for (const field of trackedFields) {
+      if (
+        Object.prototype.hasOwnProperty.call(data, field) &&
+        String((data as any)[field]) !== String((fee as any)[field])
+      ) {
+        changes[field] = {
+          from: (fee as any)[field],
+          to: (data as any)[field],
+        };
+      }
+    }
+
     if (data.customValues) {
       data = {
         ...data,
@@ -176,6 +215,19 @@ export class FeesService {
       "Student",
       fee.student.id,
     );
+
+    const changeSummary = Object.entries(changes)
+      .map(([field, { from, to }]) => `${field}: ${from ?? "—"} → ${to ?? "—"}`)
+      .join(", ");
+    await this.auditService.log({
+      module: "Fee",
+      action: "Updated",
+      studentId: fee.student.id,
+      recordId: fee.id,
+      actingUser,
+      description: `Updated fee for ${fee.student.name} (${fee.student.enrollmentNumber})${changeSummary ? ` — ${changeSummary}` : ""}`,
+      changes: Object.keys(changes).length ? changes : undefined,
+    });
     return fee;
   }
 
@@ -184,9 +236,18 @@ export class FeesService {
     data: Partial<
       Pick<Fee, "drop" | "dpt" | "bar" | "cancel" | "dropOfScholarship">
     >,
+    actingUser: { id: string; role: string },
   ) {
     const fee = await this.feeRepo.findOne({ id }, { populate: ["student"] });
     if (!fee) throw new NotFoundException("Fee record not found");
+
+    const changes: Record<string, { from: any; to: any }> = {};
+    for (const key of Object.keys(data) as (keyof typeof data)[]) {
+      if (data[key] !== undefined && data[key] !== (fee as any)[key]) {
+        changes[key] = { from: (fee as any)[key], to: data[key] };
+      }
+    }
+
     Object.assign(fee, data);
     await this.feeRepo.getEntityManager().flush();
     await this.notifications.notifyRoles(
@@ -196,9 +257,21 @@ export class FeesService {
       "Student",
       fee.student.id,
     );
+
+    const changeSummary = Object.entries(changes)
+      .map(([field, { to }]) => `${field} ${to ? "enabled" : "disabled"}`)
+      .join(", ");
+    await this.auditService.log({
+      module: "Fee",
+      action: "StatusChanged",
+      studentId: fee.student.id,
+      recordId: fee.id,
+      actingUser,
+      description: `Status changed for ${fee.student.name} (${fee.student.enrollmentNumber})${changeSummary ? ` — ${changeSummary}` : ""}`,
+      changes: Object.keys(changes).length ? changes : undefined,
+    });
     return fee;
   }
-
   // --- Customizable fee columns (dynamic schema via CustomFieldDefinition + JSONB) ---
   createFieldDefinition(
     name: string,
@@ -360,19 +433,23 @@ export class FeesService {
     actionType: string,
     amount: number,
     sourceTitle?: string,
+    actingUser: { id: string; role: string } = { id: "system", role: "System" },
   ) {
     const columnName = this.APPLICATION_FINE_COLUMN_MAP[actionType];
 
     if (!columnName) {
-      return this.addFee({
-        studentId,
-        semesterId,
-        feeType: `fine:${actionType.toLowerCase()}`,
-        amount,
-        customValues: sourceTitle
-          ? { Source: `Application: ${sourceTitle}` }
-          : {},
-      });
+      return this.addFee(
+        {
+          studentId,
+          semesterId,
+          feeType: `fine:${actionType.toLowerCase()}`,
+          amount,
+          customValues: sourceTitle
+            ? { Source: `Application: ${sourceTitle}` }
+            : {},
+        },
+        actingUser,
+      );
     }
 
     const student = await this.studentRepo.findOneOrFail({ id: studentId });
@@ -414,6 +491,21 @@ export class FeesService {
       "Student",
       student.id,
     );
+
+    await this.auditService.log({
+      module: "Fee",
+      action: "StatusChanged",
+      studentId: student.id,
+      recordId: fee.id,
+      actingUser,
+      description: `${actionType} fine of Rs ${amount.toLocaleString()} posted into "${columnName}" for ${student.name} (${student.enrollmentNumber})`,
+      changes: {
+        [columnName]: {
+          from: existingCellValue,
+          to: existingCellValue + amount,
+        },
+      },
+    });
 
     return fee;
   }
@@ -485,10 +577,13 @@ export class FeesService {
     // punctuation/whitespace-tolerant so "Adm Session", "Admission Session",
     // "Adm. Session" and "AdmSession" all resolve the same column.
     const normalizeHeader = (h: any) =>
-      String(h).replace(/[\s.]+/g, "").toLowerCase();
+      String(h)
+        .replace(/[\s.]+/g, "")
+        .toLowerCase();
     const admSessionColIdx = rawHeaders.findIndex(
       (h) =>
-        typeof h === "string" && /^adm(ission)?session$/i.test(normalizeHeader(h)),
+        typeof h === "string" &&
+        /^adm(ission)?session$/i.test(normalizeHeader(h)),
     );
     const degreeYearsColIdx = rawHeaders.findIndex(
       (h) =>
@@ -579,7 +674,16 @@ export class FeesService {
       ) {
         continue; // blank row / sub-header
       }
-      const enrollmentNumber = String(rollValue).trim();
+      // Normalize away hidden characters that commonly sneak in from
+      // copy-pasted Excel/Word data (non-breaking spaces, zero-width spaces)
+      // and collapse any accidental double spaces — these cause a roll number
+      // that LOOKS identical to an existing student's but fails an exact/ilike
+      // match, which previously caused a duplicate-create attempt to crash the
+      // whole import.
+      const enrollmentNumber = String(rollValue)
+        .replace(/[\u00A0\u200B\u200C\u200D\uFEFF]/g, "")
+        .trim()
+        .replace(/\s+/g, " ");
 
       let student = await this.studentRepo.findOne({
         enrollmentNumber: { $ilike: enrollmentNumber },
@@ -608,16 +712,45 @@ export class FeesService {
             ? String(row[sectionColIdx]).trim()
             : undefined;
 
-        student = this.studentRepo.create({
-          enrollmentNumber,
-          name: nameValue || "Unknown",
-          program: programValue || undefined,
-          section: sectionValue || undefined,
-          createdBy: createdByUserId,
-        } as Student);
-        await this.studentRepo.getEntityManager().persistAndFlush(student);
-        studentsCreatedCount++;
-        studentsCreated.push(enrollmentNumber);
+        try {
+          student = this.studentRepo.create({
+            enrollmentNumber,
+            name: nameValue || "Unknown",
+            program: programValue || undefined,
+            section: sectionValue || undefined,
+            createdBy: createdByUserId,
+          } as Student);
+          await this.studentRepo.getEntityManager().persistAndFlush(student);
+          studentsCreatedCount++;
+          studentsCreated.push(enrollmentNumber);
+        } catch (err: any) {
+          // Self-healing for the case where a student with this exact enrollment
+          // number already exists in the DB (e.g. hidden whitespace/character
+          // difference broke the $ilike match above, or a prior import created
+          // them) but the unique constraint on enrollment_number still catches it
+          // at the DB level. Instead of letting the whole import crash on this one
+          // row, detach the failed insert and re-fetch the real existing row so
+          // this row's fees still get attached to the correct student.
+          const isUniqueViolation =
+            err?.code === "23505" ||
+            /unique constraint/i.test(err?.message || "");
+          if (!isUniqueViolation) throw err;
+
+          this.studentRepo.getEntityManager().clear();
+          const existing = await this.studentRepo.findOne({
+            enrollmentNumber: { $ilike: enrollmentNumber },
+          });
+          if (!existing) {
+            // Truly unexpected — surface the original error rather than silently
+            // skipping the row.
+            throw err;
+          }
+          student = existing;
+          skipped.push({
+            row: r + 1,
+            reason: `Enrollment "${enrollmentNumber}" already existed with a hidden formatting difference — matched to existing student instead of creating a duplicate.`,
+          });
+        }
       }
 
       // If this row carries "Adm Session" + "Degree Years", (re)build the student's
@@ -631,9 +764,8 @@ export class FeesService {
       const degreeYearsRaw =
         degreeYearsColIdx >= 0 ? row[degreeYearsColIdx] : null;
       if (admSessionRaw && degreeYearsRaw) {
-        const parsedSession = this.semestersService.parseSessionLabel(
-          admSessionRaw,
-        );
+        const parsedSession =
+          this.semestersService.parseSessionLabel(admSessionRaw);
         const years = this.semestersService.parseDegreeYears(degreeYearsRaw);
         if (parsedSession && years && years > 0) {
           if (student.programDurationYears !== years) {

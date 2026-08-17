@@ -10,14 +10,14 @@ import {
   UploadedFile,
   UseGuards,
   UseInterceptors,
-} from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
-import { StudentsService } from './students.service';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { UserRole } from '../../entities';
+} from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
+import { StudentsService } from "./students.service";
+import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
+import { RolesGuard } from "../../common/guards/roles.guard";
+import { Roles } from "../../common/decorators/roles.decorator";
+import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import { UserRole } from "../../entities";
 
 @UseGuards(JwtAuthGuard)
 @Controller("students")
@@ -30,13 +30,11 @@ export class StudentsController {
       search: query.search,
       category: query.category,
       program: query.program,
-      missingMatric: query.missingMatric === 'true',
-      missingInter: query.missingInter === 'true',
-      missingDegreeSession: query.missingDegreeSession === 'true',
+      missingMatric: query.missingMatric === "true",
+      missingInter: query.missingInter === "true",
+      missingDegreeSession: query.missingDegreeSession === "true",
     };
-    // "mine=true" scopes the list to whatever the current user has personally registered —
-    // this is how the Admission Center dashboard only shows its own students.
-    if (query.mine === 'true') filters.createdBy = user.id;
+    if (query.mine === "true") filters.createdBy = user.id;
     return this.studentsService.findAllFiltered(filters);
   }
 
@@ -84,8 +82,8 @@ export class StudentsController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.MANAGER)
   @Delete(":id")
-  remove(@Param("id") id: string) {
-    return this.studentsService.remove(id);
+  remove(@Param("id") id: string, @CurrentUser() user: any) {
+    return this.studentsService.remove(id, user);
   }
 
   @UseGuards(RolesGuard)

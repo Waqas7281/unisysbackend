@@ -16,6 +16,7 @@ import { MailerModule } from "./modules/mailer/mailer.module";
 import { LettersModule } from "./modules/letters/letters.module";
 import { HrModule } from "./modules/hr/hr.module";
 import { ClearanceModule } from "./modules/clearance/clearance.module";
+import { AuditModule } from "./modules/audit/audit.module";
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { ClearanceModule } from "./modules/clearance/clearance.module";
     LettersModule,
     HrModule,
     ClearanceModule,
+    AuditModule,
   ],
 })
 export class AppModule {}

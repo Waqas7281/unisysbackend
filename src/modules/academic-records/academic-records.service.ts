@@ -10,6 +10,7 @@ import {
   StudentCategory,
   User,
 } from "../../entities";
+import { AuditService } from "../audit/audit.service";
 
 @Injectable()
 export class AcademicRecordsService {
@@ -18,9 +19,9 @@ export class AcademicRecordsService {
     private recordRepo: EntityRepository<AcademicRecord>,
     @InjectRepository(Student) private studentRepo: EntityRepository<Student>,
     @InjectRepository(User) private userRepo: EntityRepository<User>,
+    private auditService: AuditService,
   ) {}
 
-  /** 4-year program => degree session runs startYear..startYear+3, 5-year => startYear..startYear+4. */
   private programYears(student: Student): number {
     return student.semesterSystem === SemesterSystem.FOUR_YEAR ? 4 : 5;
   }
@@ -56,9 +57,6 @@ export class AcademicRecordsService {
   async create(data: any, enteredBy: User) {
     let student: Student | null = null;
 
-    // `enteredBy` comes from JWT payload (CurrentUser decorator), so it may not include
-    // required entity fields like `passwordHash`. MikroORM validates required properties
-    // during persist, so ensure we attach a real managed User entity.
     const enteredById = (enteredBy as any)?.id;
     const enteredByEntity = enteredById
       ? await this.userRepo.findOne({ id: enteredById })
@@ -100,6 +98,16 @@ export class AcademicRecordsService {
     });
 
     await this.recordRepo.getEntityManager().persistAndFlush(record);
+    if (enteredById) {
+      await this.auditService.log({
+        module: "AcademicRecord",
+        action: "Created",
+        studentId: student.id,
+        recordId: record.id,
+        actingUser: { id: enteredById, role: (enteredBy as any)?.role },
+        description: `Added ${data.level} academic record for ${student.name} (${student.enrollmentNumber})`,
+      });
+    }
     return record;
   }
 
@@ -109,6 +117,7 @@ export class AcademicRecordsService {
       sessionStartYear?: number;
       sessionEndYear?: number;
     },
+    actingUser?: any,
   ) {
     const record = await this.recordRepo.findOne(
       { id },
@@ -125,6 +134,25 @@ export class AcademicRecordsService {
         ? Number(data.sessionEndYear)
         : undefined;
 
+    const trackedFields: (keyof AcademicRecord)[] = [
+      "totalMarks",
+      "obtainedMarks",
+      "sessionStartYear",
+      "sessionEndYear",
+    ];
+    const changes: Record<string, { from: any; to: any }> = {};
+    for (const field of trackedFields) {
+      if (
+        Object.prototype.hasOwnProperty.call(data, field) &&
+        String((data as any)[field]) !== String((record as any)[field])
+      ) {
+        changes[field] = {
+          from: (record as any)[field],
+          to: (data as any)[field],
+        };
+      }
+    }
+
     Object.assign(record, data);
 
     if (record.level === AcademicLevelValues.DEGREE) {
@@ -137,16 +165,45 @@ export class AcademicRecordsService {
     }
 
     await this.recordRepo.getEntityManager().flush();
+
+    if (actingUser?.id && Object.keys(changes).length) {
+      const changeSummary = Object.entries(changes)
+        .map(
+          ([field, { from, to }]) => `${field}: ${from ?? "—"} → ${to ?? "—"}`,
+        )
+        .join(", ");
+      await this.auditService.log({
+        module: "AcademicRecord",
+        action: "Updated",
+        studentId: record.student.id,
+        recordId: record.id,
+        actingUser,
+        description: `Updated ${record.level} record for ${record.student.name} (${record.student.enrollmentNumber}) — ${changeSummary}`,
+        changes,
+      });
+    }
     return record;
   }
 
-  async remove(id: string) {
-    const record = await this.recordRepo.findOneOrFail({ id });
+  async remove(id: string, actingUser?: any) {
+    const record = await this.recordRepo.findOneOrFail(
+      { id },
+      { populate: ["student"] },
+    );
+    const summary = `${record.level} record for ${record.student.name} (${record.student.enrollmentNumber})`;
     await this.recordRepo.getEntityManager().removeAndFlush(record);
+    if (actingUser?.id) {
+      await this.auditService.log({
+        module: "AcademicRecord",
+        action: "Deleted",
+        recordId: id,
+        actingUser,
+        description: `Deleted ${summary}`,
+      });
+    }
     return { message: "Record deleted" };
   }
 
-  /** Summary numbers for the Record Room dashboard. */
   async dashboardSummary() {
     const conn = this.recordRepo.getEntityManager().getConnection();
     const totalStudents = await this.studentRepo.count();

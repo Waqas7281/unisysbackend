@@ -14,6 +14,7 @@ import {
   StudentCategory,
   UserRole,
 } from "../../entities";
+import { AuditService } from "../audit/audit.service";
 
 export interface StudentFilters {
   search?: string;
@@ -31,10 +32,10 @@ export class StudentsService {
     @InjectRepository(Student) private studentRepo: EntityRepository<Student>,
     @InjectRepository(CustomFieldDefinition)
     private fieldRepo: EntityRepository<CustomFieldDefinition>,
+    private auditService: AuditService,
   ) {}
 
   findAll(search?: string) {
-    // Kept for backward compatibility; prefer findAllFiltered.
     return this.findAllFiltered({ search });
   }
 
@@ -42,28 +43,11 @@ export class StudentsService {
     const conditions: string[] = [];
     const params: any[] = [];
 
-    // IMPORTANT: MikroORM's `connection.execute(sql, params)` does NOT understand
-    // Postgres-native `$1`/`$2` placeholders — its formatQuery() only substitutes
-    // literal `?` characters (knex-style), in order, one-for-one with the params
-    // array. Using `$1`/`$2` here silently drops the params (formatQuery finds no
-    // `?` to replace) and Postgres then rejects the literal "$1" text with
-    // "there is no parameter $1". This was the actual root cause of every filter —
-    // search, program, category, missing matric/inter — failing at once, since ANY
-    // WHERE condition at all would hit this and crash the query.
     if (filters.search && filters.search.trim()) {
-      // Search across every identifier Record Room / Admission Center staff actually
-      // use to look a student up: enrollment number, registration ID, CNIC/B-Form,
-      // roll number, name, father's name, program, email, and any admin-defined
-      // custom fields. (These columns do exist on the `students` table — the old
-      // version of this query skipped them due to a stale comment about the
-      // original migration, which was never updated after the entity grew these
-      // fields.)
       const term = `%${filters.search.trim()}%`;
       conditions.push(
         `(s.enrollment_number ILIKE ? OR s.registration_id ILIKE ? OR s.cnic ILIKE ? OR s.roll_no ILIKE ? OR s.name ILIKE ? OR s.father_name ILIKE ? OR s.program ILIKE ? OR s.email ILIKE ? OR CAST(s.custom_fields AS text) ILIKE ?)`,
       );
-      // One `?` per column above — the same value is pushed once per placeholder,
-      // in the exact order the `?`s appear in the string.
       params.push(term, term, term, term, term, term, term, term, term);
     }
     if (filters.category) {
@@ -79,12 +63,6 @@ export class StudentsService {
       params.push(filters.createdBy);
     }
 
-    // "Missing X" checkboxes: when more than one is ticked at once, Record Room
-    // wants students missing ANY of the ticked items (OR), not only students missing
-    // every ticked item at the same time (AND). The old AND-only version meant
-    // ticking both "Missing Matric" and "Missing Inter" together almost always came
-    // back empty even though plenty of students were missing one or the other.
-    // (These sub-conditions take no params, so no `?` placeholders needed here.)
     const missingConditions: string[] = [];
     if (filters.missingMatric) {
       missingConditions.push(
@@ -109,9 +87,6 @@ export class StudentsService {
 
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
 
-    // Sanity check: the number of `?` placeholders in the final SQL must match
-    // the number of params we're about to bind, or MikroORM/knex will bind them
-    // to the wrong columns (or throw). Cheap guard against future regressions.
     const placeholderCount = (where.match(/\?/g) || []).length;
     if (placeholderCount !== params.length) {
       throw new Error(
@@ -189,21 +164,28 @@ export class StudentsService {
       createdBy: user?.id,
     };
 
-    // Anything registered by the Admission Center starts life as a "New Admission"
-    // so Record Room can see it and complete the remaining fields.
     if (user?.role === UserRole.ADMISSION_CENTER) {
       payload.studentCategory = StudentCategory.NEW_ADMISSION;
     }
 
     const student = this.studentRepo.create(payload as Student);
     await this.studentRepo.getEntityManager().persistAndFlush(student);
+    if (user?.id) {
+      await this.auditService.log({
+        module: "Student",
+        action: "Created",
+        studentId: student.id,
+        recordId: student.id,
+        actingUser: user,
+        description: `Registered student ${student.name} (${student.enrollmentNumber})`,
+      });
+    }
     return student;
   }
 
   async update(id: string, data: Partial<Student>, user?: any) {
     const student = await this.findOne(id);
 
-    // Admission Center can only ever touch records it registered itself.
     if (user?.role === UserRole.ADMISSION_CENTER) {
       if (student.createdBy !== user.id) {
         throw new ForbiddenException(
@@ -243,14 +225,63 @@ export class StudentsService {
     if (data.cnic) data = { ...data, cnic: String(data.cnic).trim() };
     if (data.rollNo) data = { ...data, rollNo: String(data.rollNo).trim() };
 
+    const trackedFields: (keyof Student)[] = [
+      "name",
+      "enrollmentNumber",
+      "registrationId",
+      "cnic",
+      "program",
+      "section",
+      "studentCategory",
+    ];
+    const changes: Record<string, { from: any; to: any }> = {};
+    for (const field of trackedFields) {
+      if (
+        Object.prototype.hasOwnProperty.call(data, field) &&
+        String((data as any)[field]) !== String((student as any)[field])
+      ) {
+        changes[field] = {
+          from: (student as any)[field],
+          to: (data as any)[field],
+        };
+      }
+    }
+
     Object.assign(student, data);
     await this.studentRepo.getEntityManager().flush();
+
+    if (user?.id && Object.keys(changes).length) {
+      const changeSummary = Object.entries(changes)
+        .map(
+          ([field, { from, to }]) => `${field}: ${from ?? "—"} → ${to ?? "—"}`,
+        )
+        .join(", ");
+      await this.auditService.log({
+        module: "Student",
+        action: "Updated",
+        studentId: student.id,
+        recordId: student.id,
+        actingUser: user,
+        description: `Updated ${student.name} (${student.enrollmentNumber}) — ${changeSummary}`,
+        changes,
+      });
+    }
     return student;
   }
 
-  async remove(id: string) {
+  async remove(id: string, user?: any) {
     const student = await this.findOne(id);
+    const summary = `${student.name} (${student.enrollmentNumber})`;
     await this.studentRepo.getEntityManager().removeAndFlush(student);
+    if (user?.id) {
+      await this.auditService.log({
+        module: "Student",
+        action: "Deleted",
+        recordId: id,
+        actingUser: user,
+        description: `Deleted student ${summary}`,
+      });
+    }
     return { message: "Student deleted" };
   }
 
@@ -305,23 +336,7 @@ export class StudentsService {
     return "text";
   }
 
-  /**
-   * Bulk import from an Excel sheet. Any column not in the known list is
-   * auto-registered as a dynamic custom column (see CustomFieldDefinition)
-   * and stored under customFields on the student.
-   *
-   * Real-world sheets (e.g. exported from Excel by admin staff) often have title
-   * rows above the actual header row ("FEE DETAIL FALL-2026" / "2nd Semester to
-   * Onwards") and use different header wording than our internal field names
-   * (e.g. "Roll #" instead of "Enrollment Number", "Pregame" — a common typo —
-   * instead of "Program"). This parses the sheet the same title-row-tolerant way
-   * the Fee importer does, then maps recognized identity headers onto Student's
-   * real fields so data lands in the correct place instead of being dropped.
-   */
   async importExcel(buffer: Buffer, createdBy?: string) {
-    // cellDates: true is essential — without it, date-valued cells (DOB, Admission
-    // Date, Add Date, etc.) come back as raw Excel serial numbers (e.g. 46001)
-    // instead of real dates, which is why some sheet data looked wrong/missing.
     const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const grid: any[][] = XLSX.utils.sheet_to_json(sheet, {
@@ -330,8 +345,6 @@ export class StudentsService {
       raw: true,
     });
 
-    // Find the real header row — the first row (within the first 15) containing a
-    // Roll/Enrollment-looking cell — skipping any title/subtitle rows above it.
     let headerRowIdx = -1;
     for (let r = 0; r < Math.min(grid.length, 15); r++) {
       const row = grid[r] || [];
@@ -352,13 +365,6 @@ export class StudentsService {
 
     const rawHeaders: any[] = grid[headerRowIdx];
 
-    // Identity columns mapped straight onto Student's real fields, with the real-world
-    // header spellings we've seen ("Roll #", "Pregame" typo for Program, "Applicant ID"
-    // for the admission office's own reference number, etc.). Order matters: more
-    // specific patterns (e.g. "First Name") are checked before the generic "name" one
-    // via the dedicated firstName/lastName handling below, so a sheet that has both
-    // "First Name" and "Last Name" gets them combined into one full name instead of
-    // one silently winning and the other becoming a stray custom column.
     const IDENTITY_MAP: { field: keyof Student; pattern: RegExp }[] = [
       {
         field: "enrollmentNumber",
@@ -401,8 +407,6 @@ export class StudentsService {
       }
     });
 
-    // Everything else becomes a dynamic custom column, de-duplicating repeated
-    // headers (e.g. two "Due Date" columns) by suffixing " (2)", " (3)", etc.
     const seenNames = new Map<string, number>();
     const customColumns: { index: number; name: string }[] = [];
     const identityIndexes = new Set(identityColIdx.values());
@@ -411,7 +415,6 @@ export class StudentsService {
     rawHeaders.forEach((h, idx) => {
       if (identityIndexes.has(idx)) return;
       if (h === null || h === undefined || String(h).trim() === "") return;
-      // Skip the "Sr. #" row-counter column — it's neither identity nor useful data.
       if (/^sr\.?\s*#?$/i.test(String(h).trim())) return;
       let name = String(h).replace(/\s+/g, " ").trim();
       const count = seenNames.get(name) || 0;
@@ -434,7 +437,7 @@ export class StudentsService {
       const row = grid[r];
       const rowNum = r + 1;
       if (!row || row.every((c) => c === null || c === undefined || c === ""))
-        continue; // blank row
+        continue;
 
       const enrollColIdx = identityColIdx.get("enrollmentNumber");
       const rawEnrollment =
@@ -471,8 +474,6 @@ export class StudentsService {
         return String(value).trim();
       };
 
-      // Prefer an explicit "Name" column; otherwise combine "First Name" + "Last
-      // Name" when the sheet splits them across two columns.
       let name = getIdentity("name");
       if (!name && (firstNameIdx !== undefined || lastNameIdx !== undefined)) {
         const first =
@@ -486,10 +487,6 @@ export class StudentsService {
         name = [first, last].filter(Boolean).join(" ").trim() || undefined;
       }
 
-      // "Applicant ID" / "Registration ID" is only safe to set if it isn't already
-      // used by another student — unlike enrollment number, we don't skip the whole
-      // row over a clash here, we just leave it blank and note it so the rest of
-      // that row's data (name, program, custom fields, etc.) still lands.
       let registrationId = getIdentity("registrationId");
       if (registrationId) {
         const dupReg = await this.studentRepo.findOne({

@@ -291,6 +291,7 @@ export class ApplicationsService {
         data.actionType,
         data.amount,
         data.title,
+        actingUser,
       );
     }
 
