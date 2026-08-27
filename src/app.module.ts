@@ -17,6 +17,7 @@ import { LettersModule } from "./modules/letters/letters.module";
 import { HrModule } from "./modules/hr/hr.module";
 import { ClearanceModule } from "./modules/clearance/clearance.module";
 import { AuditModule } from "./modules/audit/audit.module";
+import { SlipsModule } from "./modules/slips/slips.module";
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { AuditModule } from "./modules/audit/audit.module";
     HrModule,
     ClearanceModule,
     AuditModule,
+    SlipsModule,
   ],
 })
 export class AppModule {}
