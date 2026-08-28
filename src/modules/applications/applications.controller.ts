@@ -37,13 +37,7 @@ export class ApplicationsController {
     @Query("assignedToMe") assignedToMe?: string,
     @CurrentUser() user?: any,
   ) {
-    // "mine=true" scopes the list to only applications this user personally
-    // created — used by Data Entry so they see their own submissions instead
-    // of every application in the system (reviewer roles never pass this).
     const createdByUserId = mine === "true" ? user?.id : undefined;
-    // "assignedToMe=true" scopes the list to only applications assigned to
-    // this user — used by Record Room so they only see applications that
-    // were explicitly assigned to them.
     const assignedToUserId = assignedToMe === "true" ? user?.id : undefined;
     return this.appsService.findAll(search, createdByUserId, assignedToUserId);
   }
@@ -112,16 +106,39 @@ export class ApplicationsController {
 
   @UseGuards(RolesGuard)
   @Roles(UserRole.MANAGER, UserRole.REGISTRAR)
-  @Post(":id/assign")
-  assign(
+  @Post(":id/assign-stage")
+  assignStage(
     @Param("id") id: string,
-    @Body() body: { assignedToUserId: string; assignedRole: string },
+    @Body()
+    body: { stage: number; assignedToUserId: string; assignedRole: string },
+    @CurrentUser() user: any,
   ) {
-    return this.appsService.assign(
+    return this.appsService.assignStage(
       id,
+      Number(body.stage),
       body.assignedToUserId,
       body.assignedRole,
+      user,
     );
+  }
+
+  @Post(":id/accept-stage")
+  acceptStage(@Param("id") id: string, @CurrentUser() user: any) {
+    return this.appsService.acceptStage(id, user);
+  }
+
+  @Post(":id/issues")
+  raiseIssue(
+    @Param("id") id: string,
+    @Body() body: { message: string },
+    @CurrentUser() user: any,
+  ) {
+    return this.appsService.raiseIssue(id, body.message, user);
+  }
+
+  @Post("issues/:issueId/resolve")
+  resolveIssue(@Param("issueId") issueId: string, @CurrentUser() user: any) {
+    return this.appsService.resolveIssue(issueId, user);
   }
 
   @Post(":id/mark-done")

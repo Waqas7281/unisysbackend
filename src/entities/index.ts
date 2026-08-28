@@ -4,6 +4,8 @@ export * from "./semester.entity";
 export * from "./fee.entity";
 export * from "./custom-field-definition.entity";
 export * from "./application.entity";
+export * from "./application-assignment.entity";
+export * from "./application-issue.entity";
 export * from "./application-action.entity";
 export * from "./academic-record.entity";
 export * from "./notification.entity";

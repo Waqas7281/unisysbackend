@@ -9,6 +9,8 @@ import { InjectRepository } from "@mikro-orm/nestjs";
 import {
   Application,
   ApplicationAction,
+  ApplicationAssignment,
+  ApplicationIssue,
   ApplicationStatus,
   Semester,
   Student,
@@ -19,9 +21,6 @@ import { NotificationsService } from "../notifications/notifications.service";
 import { MailerService } from "../mailer/mailer.service";
 import { FeesService } from "../fees/fees.service";
 
-// Proof photo cap for applications — 800KB, matches the client-side
-// compression target in CreateApplication.jsx. Enforced again here since
-// the client is never fully trusted.
 const MAX_PHOTO_BYTES = 800 * 1024;
 
 const REVIEWING_ROLES = [
@@ -31,6 +30,15 @@ const REVIEWING_ROLES = [
   UserRole.REGISTRAR,
 ];
 
+const BASE_REVIEWER_ROLES = [
+  UserRole.MANAGER,
+  UserRole.ACCOUNTS_MANAGER,
+  UserRole.STUDENT_AFFAIR,
+  UserRole.REGISTRAR,
+];
+
+const MAX_STAGES = 3;
+
 @Injectable()
 export class ApplicationsService {
   constructor(
@@ -38,6 +46,10 @@ export class ApplicationsService {
     private appRepo: EntityRepository<Application>,
     @InjectRepository(ApplicationAction)
     private actionRepo: EntityRepository<ApplicationAction>,
+    @InjectRepository(ApplicationAssignment)
+    private assignmentRepo: EntityRepository<ApplicationAssignment>,
+    @InjectRepository(ApplicationIssue)
+    private issueRepo: EntityRepository<ApplicationIssue>,
     @InjectRepository(Student) private studentRepo: EntityRepository<Student>,
     @InjectRepository(Semester)
     private semesterRepo: EntityRepository<Semester>,
@@ -47,8 +59,6 @@ export class ApplicationsService {
     private feesService: FeesService,
   ) {}
 
-  // JWT se aane wale plain {id, email, role, name} object ko
-  // asli MikroORM User reference mein convert karta hai (DB hit ke bagair).
   private userRef(user: { id: string }): User {
     return this.appRepo.getEntityManager().getReference(User, user.id);
   }
@@ -85,6 +95,23 @@ export class ApplicationsService {
     );
   }
 
+  private getAssignments(applicationId: string) {
+    return this.assignmentRepo.find(
+      { application: applicationId },
+      { orderBy: { stage: "ASC" }, populate: ["assignedTo", "assignedBy"] },
+    );
+  }
+
+  private getIssues(applicationId: string) {
+    return this.issueRepo.find(
+      { application: applicationId },
+      {
+        orderBy: { raisedAt: "DESC" },
+        populate: ["raisedBy", "resolvedBy"],
+      },
+    );
+  }
+
   async findOne(id: string) {
     const app = await this.appRepo.findOne(
       { id },
@@ -103,10 +130,11 @@ export class ApplicationsService {
       { application: id },
       { orderBy: { createdAt: "ASC" }, populate: ["performedBy"] },
     );
-    return { application: app, actions };
+    const assignments = await this.getAssignments(id);
+    const issues = await this.getIssues(id);
+    return { application: app, actions, assignments, issues };
   }
 
-  /** 6.2 / 8.2: Data Entry creates an application only for an existing student, tied to one of their semesters. */
   async create(
     data: {
       enrollmentNumber: string;
@@ -186,7 +214,7 @@ export class ApplicationsService {
     actingUser: User,
   ) {
     const app = await this.appRepo.findOneOrFail({ id: applicationId });
-    await this.assertEditable(app, actingUser);
+    this.assertEditable(app, actingUser);
 
     if (data.photoBase64 === null) {
       app.photoData = undefined;
@@ -223,22 +251,18 @@ export class ApplicationsService {
     }
   }
 
-  private assertCanReview(app: Application, actingUser: User) {
-    const baseReviewerRoles = [
-      UserRole.MANAGER,
-      UserRole.ACCOUNTS_MANAGER,
-      UserRole.STUDENT_AFFAIR,
-      UserRole.REGISTRAR,
-    ];
-    if (app.assignedTo) {
-      if (app.assignedTo.id !== actingUser.id) {
+  private async assertCanReview(app: Application, actingUser: User) {
+    const allAssignments = await this.getAssignments(app.id);
+    if (allAssignments.length > 0) {
+      const current = allAssignments.find((r) => !r.accepted);
+      if (!current || current.assignedTo.id !== actingUser.id) {
         throw new ForbiddenException(
-          "This application is assigned to someone else — only the assignee can act on it",
+          "This application is assigned to someone else at the current stage — only the assignee can act on it",
         );
       }
       return;
     }
-    if (!baseReviewerRoles.includes(actingUser.role)) {
+    if (!BASE_REVIEWER_ROLES.includes(actingUser.role)) {
       throw new ForbiddenException(
         "This application hasn't been assigned to you yet",
       );
@@ -260,9 +284,9 @@ export class ApplicationsService {
       { id: applicationId },
       { populate: ["student", "semester", "createdBy", "assignedTo"] },
     );
-    await this.assertEditable(app, actingUser);
+    this.assertEditable(app, actingUser);
     if (actingUser.role !== UserRole.DATA_ENTRY) {
-      this.assertCanReview(app, actingUser);
+      await this.assertCanReview(app, actingUser);
     }
 
     const action = this.actionRepo.create({
@@ -348,32 +372,156 @@ export class ApplicationsService {
     return marker;
   }
 
-  async assign(
+  async assignStage(
     applicationId: string,
+    stage: number,
     assignedToUserId: string,
     assignedRole: string,
+    actingUser: User,
   ) {
+    if (![1, 2, 3].includes(stage)) {
+      throw new BadRequestException("Stage must be 1, 2 or 3");
+    }
     const app = await this.appRepo.findOneOrFail(
       { id: applicationId },
       { populate: ["student"] },
     );
+
+    const existing = await this.getAssignments(applicationId);
+
+    if (stage > 1) {
+      const prev = existing.find((a) => a.stage === stage - 1);
+      if (!prev || !prev.accepted) {
+        throw new BadRequestException(
+          `Stage ${stage - 1} must be accepted before assigning stage ${stage}`,
+        );
+      }
+    }
+
+    let row = existing.find((a) => a.stage === stage);
+    if (row?.accepted) {
+      throw new BadRequestException(
+        "This stage has already been accepted and can't be reassigned",
+      );
+    }
+
     const assignee = await this.userRepo.findOneOrFail({
       id: assignedToUserId,
     });
+    const em = this.appRepo.getEntityManager();
+
+    if (row) {
+      row.assignedTo = assignee;
+      row.assignedRole = assignedRole;
+      row.assignedBy = this.userRef(actingUser);
+      row.assignedAt = new Date();
+    } else {
+      row = this.assignmentRepo.create({
+        application: app,
+        stage,
+        assignedTo: assignee,
+        assignedRole,
+        assignedBy: this.userRef(actingUser),
+        accepted: false,
+      });
+    }
+    em.persist(row);
+
     app.assignedTo = assignee;
     app.assignedRole = assignedRole;
     app.status = ApplicationStatus.ASSIGNED;
     app.locked = true;
-    await this.appRepo.getEntityManager().flush();
+    await em.flush();
 
     await this.notifications.notify(
       assignee.id,
       "Assigned",
-      `Application "${app.title}" for ${app.student.name} has been assigned to you`,
+      `Application "${app.title}" for ${app.student.name} has been assigned to you (stage ${stage} of ${MAX_STAGES})`,
       "Application",
       app.id,
     );
-    return app;
+
+    return this.getAssignments(applicationId);
+  }
+
+  async acceptStage(applicationId: string, actingUser: User) {
+    const app = await this.appRepo.findOneOrFail(
+      { id: applicationId },
+      { populate: ["student", "createdBy"] },
+    );
+
+    const allAssignments = await this.getAssignments(applicationId);
+    const current = allAssignments.find((a) => !a.accepted);
+    if (!current) {
+      throw new BadRequestException("There is no active stage to accept");
+    }
+    if (current.assignedTo.id !== actingUser.id) {
+      throw new ForbiddenException(
+        "This stage is assigned to someone else — only the assignee can accept it",
+      );
+    }
+
+    const openIssues = await this.issueRepo.find({
+      application: applicationId,
+      resolved: false,
+    });
+    if (openIssues.length > 0) {
+      throw new BadRequestException(
+        "This application has an unresolved issue — it must be cleared before this stage can be accepted",
+      );
+    }
+
+    current.accepted = true;
+    current.acceptedAt = new Date();
+    const em = this.appRepo.getEntityManager();
+    await em.persistAndFlush(current);
+
+    await this.actionRepo.getEntityManager().persistAndFlush(
+      this.actionRepo.create({
+        application: app,
+        performedBy: this.userRef(actingUser),
+        performedByRole: actingUser.role,
+        actionType: "StageAccepted",
+        title: `Stage ${current.stage} accepted`,
+        description: current.assignedRole,
+        date: new Date(),
+      }),
+    );
+
+    if (current.stage >= MAX_STAGES) {
+      app.status = ApplicationStatus.ACCEPTED;
+      app.decidedAt = new Date();
+      await em.flush();
+
+      if (app.student.email) {
+        await this.mailer.send({
+          to: app.student.email,
+          subject: `Your application "${app.title}" has been Accepted`,
+          html: `<p>Dear ${app.student.name},</p>
+                 <p>Your application reference <b>${app.id}</b> ("${app.title}") has been <b>Accepted</b> as of ${app.decidedAt.toDateString()}.</p>
+                 <p>Regards,<br/>University Administration</p>`,
+        });
+      }
+      await this.notifications.notify(
+        app.createdBy.id,
+        "Decided",
+        `Application "${app.title}" for ${app.student.name} was Accepted`,
+        "Application",
+        app.id,
+      );
+    } else {
+      app.status = ApplicationStatus.UNDER_REVIEW;
+      await em.flush();
+      await this.notifications.notifyRoles(
+        [UserRole.MANAGER, UserRole.REGISTRAR],
+        "ReviewReady",
+        `Stage ${current.stage} of "${app.title}" accepted by ${actingUser.name} — ready to assign the next department`,
+        "Application",
+        app.id,
+      );
+    }
+
+    return this.getAssignments(applicationId);
   }
 
   async markDone(applicationId: string, actingUser: User) {
@@ -394,6 +542,52 @@ export class ApplicationsService {
     return app;
   }
 
+  async raiseIssue(applicationId: string, message: string, actingUser: User) {
+    const trimmed = (message || "").trim();
+    if (!trimmed) {
+      throw new BadRequestException("Issue message can't be empty");
+    }
+    const app = await this.appRepo.findOneOrFail({ id: applicationId });
+    await this.assertCanReview(app, actingUser);
+
+    const issue = this.issueRepo.create({
+      application: app,
+      message: trimmed,
+      raisedBy: this.userRef(actingUser),
+      raisedByRole: actingUser.role,
+      resolved: false,
+    });
+    await this.issueRepo.getEntityManager().persistAndFlush(issue);
+
+    await this.notifications.notifyRoles(
+      REVIEWING_ROLES,
+      "IssueRaised",
+      `Issue raised on "${app.title}" by ${actingUser.name} (${actingUser.role}): ${trimmed}`,
+      "Application",
+      app.id,
+    );
+
+    return this.getIssues(applicationId);
+  }
+
+  async resolveIssue(issueId: string, actingUser: User) {
+    const issue = await this.issueRepo.findOneOrFail(
+      { id: issueId },
+      { populate: ["application"] },
+    );
+    if (issue.resolved) {
+      throw new BadRequestException("This issue is already resolved");
+    }
+    await this.assertCanReview(issue.application, actingUser);
+
+    issue.resolved = true;
+    issue.resolvedBy = this.userRef(actingUser);
+    issue.resolvedAt = new Date();
+    await this.issueRepo.getEntityManager().persistAndFlush(issue);
+
+    return this.getIssues(issue.application.id);
+  }
+
   async decide(
     applicationId: string,
     decision: "Accepted" | "Rejected",
@@ -404,7 +598,7 @@ export class ApplicationsService {
       { id: applicationId },
       { populate: ["student", "createdBy", "assignedTo"] },
     );
-    this.assertCanReview(app, actingUser);
+    await this.assertCanReview(app, actingUser);
 
     app.status =
       decision === "Accepted"

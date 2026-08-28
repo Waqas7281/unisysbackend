@@ -3,6 +3,8 @@ import { MikroOrmModule } from "@mikro-orm/nestjs";
 import {
   Application,
   ApplicationAction,
+  ApplicationAssignment,
+  ApplicationIssue,
   Semester,
   Student,
   User,
@@ -18,6 +20,8 @@ import { FeesModule } from "../fees/fees.module";
     MikroOrmModule.forFeature([
       Application,
       ApplicationAction,
+      ApplicationAssignment,
+      ApplicationIssue,
       Student,
       Semester,
       User,
