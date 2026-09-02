@@ -241,6 +241,21 @@ export class ApplicationsService {
     return app;
   }
 
+  async updateApplication(
+    applicationId: string,
+    data: { title?: string; description?: string },
+    actingUser: User,
+  ) {
+    const app = await this.appRepo.findOneOrFail({ id: applicationId });
+    this.assertEditable(app, actingUser);
+
+    if (data.title !== undefined) app.title = data.title;
+    if (data.description !== undefined) app.description = data.description;
+
+    await this.appRepo.getEntityManager().flush();
+    return app;
+  }
+
   private assertEditable(app: Application, actingUser: User) {
     if (actingUser.role === UserRole.DATA_ENTRY) {
       if (app.locked) {
