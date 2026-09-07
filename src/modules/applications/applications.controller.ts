@@ -98,7 +98,7 @@ export class ApplicationsController {
   }
 
   @UseGuards(RolesGuard)
-  @Roles(...REVIEWERS)
+  @Roles(...REVIEWERS, UserRole.DATA_ENTRY)
   @Patch("actions/:actionId")
   updateAction(
     @Param("actionId") actionId: string,

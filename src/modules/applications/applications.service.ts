@@ -351,6 +351,17 @@ export class ApplicationsService {
       { id: actionId },
       { populate: ["application", "application.student"] },
     );
+    // Data Entry can correct an entry only while the application is still
+    // unlocked — same boundary as addAction. Once a reviewer has touched
+    // it (locked = true), only reviewer roles may correct it.
+    if (
+      actingUser.role === UserRole.DATA_ENTRY &&
+      original.application.locked
+    ) {
+      throw new ForbiddenException(
+        "This application is locked — a reviewer has already acted on it",
+      );
+    }
     const edit = this.actionRepo.create({
       application: original.application,
       performedBy: this.userRef(actingUser),
