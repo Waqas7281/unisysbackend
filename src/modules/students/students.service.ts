@@ -194,21 +194,31 @@ export class StudentsService {
       }
     }
 
-    if (
-      data.registrationId &&
-      data.registrationId.trim() !== (student.registrationId || "")
-    ) {
-      const registrationId = data.registrationId.trim();
-      const dupReg = await this.studentRepo.findOne({
-        registrationId: { $ilike: registrationId },
-      });
-      if (dupReg && dupReg.id !== id)
-        throw new BadRequestException(
-          "A student with this Registration ID already exists",
-        );
-      data = { ...data, registrationId };
+    // registrationId has a unique DB constraint — but enrollmentNumber is
+    // the real primary identifier, so registrationId is allowed to be
+    // blank for students who never got one. When it's blank, store a real
+    // NULL, never an empty string: two students both saved with "" would
+    // collide against each other on that unique constraint and the update
+    // would fail with no clear reason why.
+    if (data.registrationId !== undefined) {
+      const trimmed = data.registrationId
+        ? String(data.registrationId).trim()
+        : "";
+      if (trimmed) {
+        if (trimmed !== (student.registrationId || "")) {
+          const dupReg = await this.studentRepo.findOne({
+            registrationId: { $ilike: trimmed },
+          });
+          if (dupReg && dupReg.id !== id)
+            throw new BadRequestException(
+              "A student with this Registration ID already exists",
+            );
+        }
+        data = { ...data, registrationId: trimmed };
+      } else {
+        data = { ...data, registrationId: null };
+      }
     }
-
     if (data.enrollmentNumber) {
       const enrollmentNumber = String(data.enrollmentNumber).trim();
       if (enrollmentNumber !== student.enrollmentNumber) {
