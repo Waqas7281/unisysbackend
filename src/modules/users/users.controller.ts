@@ -1,9 +1,19 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
-import { UsersService } from './users.service';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { UserRole } from '../../entities';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  UseGuards,
+} from "@nestjs/common";
+import { UsersService } from "./users.service";
+import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
+import { RolesGuard } from "../../common/guards/roles.guard";
+import { Roles } from "../../common/decorators/roles.decorator";
+import { UserRole } from "../../entities";
+import { CurrentUser } from "../../common/decorators/current-user.decorator";
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(UserRole.MANAGER)
@@ -11,11 +21,11 @@ import { UserRole } from '../../entities';
 export class UsersController {
   constructor(private usersService: UsersService) {}
 
-  @Roles(UserRole.MANAGER, UserRole.REGISTRAR)
   @Get()
   findAll() {
     return this.usersService.findAll();
   }
+
   @Post()
   create(@Body() body: any) {
     return this.usersService.create(body);
@@ -32,7 +42,7 @@ export class UsersController {
   }
 
   @Patch(":id/toggle-block")
-  toggleBlock(@Param("id") id: string) {
-    return this.usersService.toggleBlock(id);
+  toggleBlock(@Param("id") id: string, @CurrentUser() me: { id: string }) {
+    return this.usersService.toggleBlock(id, me.id);
   }
 }

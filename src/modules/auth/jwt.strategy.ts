@@ -19,20 +19,14 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
+  // Har request par chalta hai. JWT stateless hota hai, isliye block hone ke baad
+  // bhi valid rehta hai jab tak DB se check na karo.
   async validate(payload: any) {
-    // Token signature/expiry check pehle Passport khud kar chuka hai —
-    // ab yahan har request pe database se dobara confirm karte hain ke
-    // user abhi bhi maujood aur active hai. Isi wajah se block karte hi
-    // user ka agla API call turant reject ho jata hai, uska purana token
-    // expire hone ka intezar nahi karna parta.
-    const user = await this.userRepo.findOne({ id: payload.sub });
+    const em = this.userRepo.getEntityManager().fork();
+    const user = await em.findOne(User, { id: payload.sub });
 
-    if (!user) {
-      throw new UnauthorizedException("User no longer exists");
-    }
-    if (!user.isActive) {
-      throw new UnauthorizedException("unauthorized");
-    }
+    if (!user) throw new UnauthorizedException("ACCOUNT_NOT_FOUND");
+    if (!user.isActive) throw new UnauthorizedException("ACCOUNT_BLOCKED");
 
     return { id: user.id, email: user.email, role: user.role, name: user.name };
   }
