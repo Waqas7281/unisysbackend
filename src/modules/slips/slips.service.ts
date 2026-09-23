@@ -54,11 +54,18 @@ export class SlipsService {
         data.amount !== undefined && data.amount !== ""
           ? String(data.amount)
           : undefined,
-      preparedBy: data.preparedBy,
+      // "Prepared By" = whoever is actually printing/saving this slip right
+      // now, NOT whoever originally typed the fine/action entry. Taken from
+      // the authenticated request user (server-side, can't be spoofed by
+      // whatever the frontend sends) so it always matches who clicked Print.
+      preparedBy: issuedByUser.name,
       issuedBy: em.getReference(User, issuedByUser.id),
       extra: data.extra,
     });
     await em.persistAndFlush(slip);
+    // Populate issuedBy (name + role) before returning so the frontend can
+    // show "Printed by: <role>" immediately, without a second lookup.
+    await em.populate(slip, ["issuedBy"]);
     return slip;
   }
 
