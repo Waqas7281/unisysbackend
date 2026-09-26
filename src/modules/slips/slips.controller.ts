@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from "@nestjs/common";
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from "@nestjs/common";
 import { SlipsService } from "./slips.service";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
@@ -15,6 +23,14 @@ export class SlipsController {
   @Post()
   create(@Body() body: any, @CurrentUser() user: User) {
     return this.slipsService.create(body, user);
+  }
+
+  // Recent slips + Enrollment/Name/Type filters (Search Slip page's list).
+  // Must stay a plain "/slips" GET — Nest still routes ":serialNumber"
+  // below it correctly since that one always has an extra path segment.
+  @Get()
+  search(@Query() query: any) {
+    return this.slipsService.search(query);
   }
 
   @Get(":serialNumber")

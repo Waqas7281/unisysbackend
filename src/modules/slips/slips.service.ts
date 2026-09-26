@@ -82,4 +82,50 @@ export class SlipsService {
     }
     return slip;
   }
+
+  // Powers the "Recent Slips" list + Enrollment/Name/Type filters on the
+  // Search Slip page — this is how a lost/misplaced slip is FOUND again
+  // (so staff re-print the same serial instead of accidentally generating
+  // a brand new one for the same fine/fee).
+  async search(params: {
+    enrollmentNumber?: string;
+    name?: string;
+    title?: string;
+    page?: number | string;
+    limit?: number | string;
+  }) {
+    const page = Math.max(1, Number(params.page) || 1);
+    const limit = Math.min(50, Math.max(1, Number(params.limit) || 10));
+
+    const and: any[] = [];
+    if (params.enrollmentNumber) {
+      and.push({
+        $or: [
+          { rollNo: { $ilike: `%${params.enrollmentNumber}%` } },
+          {
+            student: {
+              enrollmentNumber: { $ilike: `%${params.enrollmentNumber}%` },
+            },
+          },
+        ],
+      });
+    }
+    if (params.name) {
+      and.push({ student: { name: { $ilike: `%${params.name}%` } } });
+    }
+    if (params.title) {
+      and.push({ title: { $ilike: `%${params.title}%` } });
+    }
+
+    const where: any = and.length ? { $and: and } : {};
+
+    const [items, total] = await this.slipRepo.findAndCount(where, {
+      orderBy: { issuedAt: "DESC" },
+      populate: ["student", "issuedBy"],
+      limit,
+      offset: (page - 1) * limit,
+    });
+
+    return { items, total, page, limit };
+  }
 }
