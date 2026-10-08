@@ -16,3 +16,4 @@ export * from "./staff-leave.entity";
 export * from "./clearance-slip.entity";
 export * from "./audit-log.entity";
 export * from "./slip.entity";
+export * from "./leave-application.entity";
