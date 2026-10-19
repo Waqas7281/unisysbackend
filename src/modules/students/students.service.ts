@@ -164,9 +164,12 @@ export class StudentsService {
       createdBy: user?.id,
     };
 
-    if (user?.role === UserRole.ADMISSION_CENTER) {
-      payload.studentCategory = StudentCategory.NEW_ADMISSION;
-    }
+        if (
+          user?.role === UserRole.ADMISSION_CENTER ||
+          user?.role === UserRole.DATA_ENTRY
+        ) {
+          payload.studentCategory = StudentCategory.NEW_ADMISSION;
+        }
 
     const student = this.studentRepo.create(payload as Student);
     await this.studentRepo.getEntityManager().persistAndFlush(student);
@@ -186,15 +189,18 @@ export class StudentsService {
   async update(id: string, data: Partial<Student>, user?: any) {
     const student = await this.findOne(id);
 
-    if (user?.role === UserRole.ADMISSION_CENTER) {
-      if (student.createdBy !== user.id) {
-        throw new ForbiddenException(
-          "You can only update students you registered yourself",
-        );
-      }
-    }
+        if (
+          user?.role === UserRole.ADMISSION_CENTER ||
+          user?.role === UserRole.DATA_ENTRY
+        ) {
+          if (student.createdBy !== user.id) {
+            throw new ForbiddenException(
+              "You can only update students you registered yourself",
+            );
+          }
+        }
 
-    // registrationId has a unique DB constraint — but enrollmentNumber is
+       // registrationId has a unique DB constraint — but enrollmentNumber is
     // the real primary identifier, so registrationId is allowed to be
     // blank for students who never got one. When it's blank, store a real
     // NULL, never an empty string: two students both saved with "" would

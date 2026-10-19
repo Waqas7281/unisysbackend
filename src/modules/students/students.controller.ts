@@ -59,6 +59,7 @@ export class StudentsController {
     UserRole.ACCOUNTS_MANAGER,
     UserRole.ADMISSION_CENTER,
     UserRole.STUDENT_AFFAIR,
+    UserRole.DATA_ENTRY,
   )
   @Post()
   create(@Body() body: any, @CurrentUser() user: any) {
@@ -73,6 +74,7 @@ export class StudentsController {
     UserRole.RECORD_ROOM,
     UserRole.ADMISSION_CENTER,
     UserRole.REGISTRAR,
+    UserRole.DATA_ENTRY,
   )
   @Patch(":id")
   update(@Param("id") id: string, @Body() body: any, @CurrentUser() user: any) {
