@@ -11,6 +11,7 @@ export enum UserRole {
   REGISTRAR = "Registrar",
   ADMISSION_CENTER = "AdmissionCenter",
   HR = "HR",
+  SCAN_SLIP = "ScanSlip",
 }
 
 @Entity({ tableName: "users" })

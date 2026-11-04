@@ -53,6 +53,7 @@ export class ClearanceController {
     UserRole.ACCOUNTS_MANAGER,
     UserRole.STUDENT_AFFAIR,
     UserRole.REGISTRAR,
+    UserRole.SCAN_SLIP,
   )
   @Post("verify/:token")
   verify(@Param("token") token: string) {
