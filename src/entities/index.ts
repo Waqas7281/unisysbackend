@@ -17,3 +17,5 @@ export * from "./clearance-slip.entity";
 export * from "./audit-log.entity";
 export * from "./slip.entity";
 export * from "./leave-application.entity";
+export * from "./scholarship-award.entity";
+export * from "./scholarship-record.entity";

@@ -19,6 +19,7 @@ import { ClearanceModule } from "./modules/clearance/clearance.module";
 import { AuditModule } from "./modules/audit/audit.module";
 import { SlipsModule } from "./modules/slips/slips.module";
 import { LeaveApplicationsModule } from "./modules/leave-applications/leave-applications.module";
+import { ScholarshipModule } from "./modules/scholarship/scholarship.module";
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { LeaveApplicationsModule } from "./modules/leave-applications/leave-appl
     AuditModule,
     SlipsModule,
     LeaveApplicationsModule,
+    ScholarshipModule,
   ],
 })
 export class AppModule {}
